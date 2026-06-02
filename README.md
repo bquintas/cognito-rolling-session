@@ -13,7 +13,9 @@ A fully self-contained stack you can deploy in any AWS account to demonstrate th
 ## Structure
 
 ```
-poc/
+├── ARCHITECTURE.md             # Full technical design and flow documentation
+├── README.md                   # This file (quick start + how to run)
+├── demo-execution-logs.md      # Example run with correlated CloudWatch logs
 ├── lambdas/
 │   ├── defineAuthChallenge.mjs     # Controls flow: 1 challenge → issue tokens
 │   ├── createAuthChallenge.mjs     # Asks client for renewal token
@@ -25,12 +27,16 @@ poc/
 ├── infrastructure/
 │   ├── template.yaml               # SAM template (full stack)
 │   └── dynamodb-table.json         # Standalone DynamoDB (if deploying separately)
-├── test-scripts/
-│   ├── deploy.sh                   # Deploy the stack
-│   ├── demo.sh                     # Run end-to-end demo with logging
-│   └── teardown.sh                 # Clean up everything
-└── README.md                       # This file
+└── test-scripts/
+    ├── deploy.sh                   # Deploy the stack
+    ├── demo.sh                     # Run end-to-end demo with logging
+    └── teardown.sh                 # Clean up everything
 ```
+
+## Documentation
+
+- **[ARCHITECTURE.md](./ARCHITECTURE.md)** — Full technical design: problem statement, flow diagrams, security properties, dual-expiry model, constraints, and cost estimate
+- **[demo-execution-logs.md](./demo-execution-logs.md)** — Example demo run with correlated CloudWatch Lambda logs showing the exact invocation chain and timestamps
 
 ## Quick Start
 
