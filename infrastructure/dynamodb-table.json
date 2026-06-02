@@ -1,0 +1,67 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "DynamoDB table for Cognito rolling session renewal tokens",
+  "Parameters": {
+    "TableName": {
+      "Type": "String",
+      "Default": "CognitoRenewalTokens",
+      "Description": "Name of the DynamoDB table"
+    },
+    "MaxInactivityDays": {
+      "Type": "Number",
+      "Default": 30,
+      "Description": "Default maximum inactivity window in days"
+    }
+  },
+  "Resources": {
+    "RenewalTokensTable": {
+      "Type": "AWS::DynamoDB::Table",
+      "Properties": {
+        "TableName": { "Ref": "TableName" },
+        "BillingMode": "PAY_PER_REQUEST",
+        "AttributeDefinitions": [
+          {
+            "AttributeName": "userSub",
+            "AttributeType": "S"
+          }
+        ],
+        "KeySchema": [
+          {
+            "AttributeName": "userSub",
+            "KeyType": "HASH"
+          }
+        ],
+        "TimeToLiveSpecification": {
+          "AttributeName": "ttl",
+          "Enabled": true
+        },
+        "PointInTimeRecoverySpecification": {
+          "PointInTimeRecoveryEnabled": true
+        },
+        "SSESpecification": {
+          "SSEEnabled": true
+        },
+        "Tags": [
+          {
+            "Key": "Project",
+            "Value": "Cognito-Rolling-Session"
+          },
+          {
+            "Key": "Environment",
+            "Value": "POC"
+          }
+        ]
+      }
+    }
+  },
+  "Outputs": {
+    "TableName": {
+      "Description": "DynamoDB table name",
+      "Value": { "Ref": "RenewalTokensTable" }
+    },
+    "TableArn": {
+      "Description": "DynamoDB table ARN",
+      "Value": { "Fn::GetAtt": ["RenewalTokensTable", "Arn"] }
+    }
+  }
+}

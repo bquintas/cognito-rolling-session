@@ -1,0 +1,224 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: >
+  Cognito Rolling Session POC - Full stack with User Pool, Lambdas, DynamoDB, and API Gateway
+
+Parameters:
+  Environment:
+    Type: String
+    Default: poc
+  MaxInactivityDays:
+    Type: Number
+    Default: 30
+  RefreshTokenValidityDays:
+    Type: Number
+    Default: 30
+  MaxAbsoluteSessionDays:
+    Type: Number
+    Default: 90
+    Description: Hard cap on session lifetime (even active users must re-auth after this)
+
+Globals:
+  Function:
+    Runtime: nodejs20.x
+    Timeout: 10
+    MemorySize: 128
+    Environment:
+      Variables:
+        TABLE_NAME: !Ref RenewalTokensTable
+        MAX_INACTIVITY_DAYS: !Ref MaxInactivityDays
+
+Resources:
+  # ============================================================
+  # DynamoDB Table
+  # ============================================================
+  RenewalTokensTable:
+    Type: AWS::DynamoDB::Table
+    Properties:
+      TableName: !Sub "CognitoRenewalTokens-${Environment}"
+      BillingMode: PAY_PER_REQUEST
+      AttributeDefinitions:
+        - AttributeName: userSub
+          AttributeType: S
+      KeySchema:
+        - AttributeName: userSub
+          KeyType: HASH
+      TimeToLiveSpecification:
+        AttributeName: ttl
+        Enabled: true
+      SSESpecification:
+        SSEEnabled: true
+
+  # ============================================================
+  # Lambda Functions
+  # ============================================================
+  DefineAuthChallengeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "cognito-define-auth-challenge-${Environment}"
+      CodeUri: ../lambdas/
+      Handler: defineAuthChallenge.handler
+
+  CreateAuthChallengeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "cognito-create-auth-challenge-${Environment}"
+      CodeUri: ../lambdas/
+      Handler: createAuthChallenge.handler
+
+  VerifyAuthChallengeFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "cognito-verify-auth-challenge-${Environment}"
+      CodeUri: ../lambdas/
+      Handler: verifyAuthChallenge.handler
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref RenewalTokensTable
+          MAX_INACTIVITY_DAYS: !Ref MaxInactivityDays
+          MAX_ABSOLUTE_SESSION_DAYS: !Ref MaxAbsoluteSessionDays
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RenewalTokensTable
+
+  PostAuthenticationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "cognito-post-authentication-${Environment}"
+      CodeUri: ../lambdas/
+      Handler: postAuthentication.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RenewalTokensTable
+
+  FetchRenewalTokenFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "cognito-fetch-renewal-token-${Environment}"
+      CodeUri: ../lambdas/
+      Handler: fetchRenewalToken.handler
+      Policies:
+        - DynamoDBCrudPolicy:
+            TableName: !Ref RenewalTokensTable
+      Events:
+        GetToken:
+          Type: Api
+          Properties:
+            RestApiId: !Ref RenewalApi
+            Path: /renewal-token
+            Method: GET
+            Auth:
+              Authorizer: CognitoAuthorizer
+
+  # ============================================================
+  # API Gateway
+  # ============================================================
+  RenewalApi:
+    Type: AWS::Serverless::Api
+    Properties:
+      Name: !Sub "cognito-renewal-api-${Environment}"
+      StageName: !Ref Environment
+      Auth:
+        DefaultAuthorizer: CognitoAuthorizer
+        Authorizers:
+          CognitoAuthorizer:
+            UserPoolArn: !GetAtt UserPool.Arn
+            Identity:
+              Header: Authorization
+
+  # ============================================================
+  # Cognito User Pool
+  # ============================================================
+  UserPool:
+    Type: AWS::Cognito::UserPool
+    Properties:
+      UserPoolName: !Sub "rolling-session-pool-${Environment}"
+      AutoVerifiedAttributes:
+        - email
+      UsernameAttributes:
+        - email
+      Policies:
+        PasswordPolicy:
+          MinimumLength: 8
+          RequireLowercase: true
+          RequireUppercase: true
+          RequireNumbers: true
+          RequireSymbols: false
+      Schema:
+        - Name: email
+          AttributeDataType: String
+          Required: true
+          Mutable: true
+      LambdaConfig:
+        DefineAuthChallenge: !GetAtt DefineAuthChallengeFunction.Arn
+        CreateAuthChallenge: !GetAtt CreateAuthChallengeFunction.Arn
+        VerifyAuthChallengeResponse: !GetAtt VerifyAuthChallengeFunction.Arn
+        PostAuthentication: !GetAtt PostAuthenticationFunction.Arn
+
+  UserPoolClient:
+    Type: AWS::Cognito::UserPoolClient
+    Properties:
+      ClientName: !Sub "rolling-session-client-${Environment}"
+      UserPoolId: !Ref UserPool
+      GenerateSecret: false
+      ExplicitAuthFlows:
+        - ALLOW_CUSTOM_AUTH
+        - ALLOW_USER_SRP_AUTH
+        - ALLOW_REFRESH_TOKEN_AUTH
+        - ALLOW_ADMIN_USER_PASSWORD_AUTH
+      RefreshTokenValidity: !Ref RefreshTokenValidityDays
+      TokenValidityUnits:
+        RefreshToken: days
+        AccessToken: hours
+        IdToken: hours
+      AccessTokenValidity: 1
+      IdTokenValidity: 1
+
+  # ============================================================
+  # Lambda Permissions (allow Cognito to invoke triggers)
+  # ============================================================
+  DefineAuthPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt DefineAuthChallengeFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
+
+  CreateAuthPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt CreateAuthChallengeFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
+
+  VerifyAuthPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt VerifyAuthChallengeFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
+
+  PostAuthPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt PostAuthenticationFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
+
+Outputs:
+  UserPoolId:
+    Description: Cognito User Pool ID
+    Value: !Ref UserPool
+  UserPoolClientId:
+    Description: Cognito App Client ID
+    Value: !Ref UserPoolClient
+  ApiEndpoint:
+    Description: API Gateway endpoint for renewal token fetch
+    Value: !Sub "https://${RenewalApi}.execute-api.${AWS::Region}.amazonaws.com/${Environment}"
+  DynamoDBTable:
+    Description: DynamoDB table name
+    Value: !Ref RenewalTokensTable

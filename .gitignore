@@ -1,0 +1,9 @@
+# SAM build artifacts
+.aws-sam/
+*/.aws-sam/
+
+# Node
+node_modules/
+
+# OS
+.DS_Store
