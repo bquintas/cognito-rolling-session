@@ -73,6 +73,7 @@ The demo walks through:
 5. ✅ Performs **silent session renewal** via `CUSTOM_AUTH` + renewal token
 6. ✅ Fetches the **rotated** renewal token
 7. ✅ Verifies old token is **invalidated**
+8. ✅ **Session revocation** — deletes DynamoDB record, proves valid token is rejected
 
 Each step shows colored output with timestamps. After the demo, check CloudWatch Logs for detailed Lambda traces.
 
@@ -104,6 +105,7 @@ Open CloudWatch Log Groups in the AWS Console:
 | Old renewal token rejected | Forward secrecy |
 | API returns 404 on second fetch | One-time pickup prevents replay |
 | Absolute session cap enforced (90 days) | Even active users must re-auth eventually (compliance) |
+| Session revocation via DynamoDB delete | Admins can instantly kill any session |
 
 ## Customization
 
@@ -113,7 +115,7 @@ Open CloudWatch Log Groups in the AWS Console:
 | Absolute session limit | `template.yaml` → `MaxAbsoluteSessionDays` | 90 days |
 | Inactivity policy mode | `template.yaml` → `InactivityPolicyMode` | `enforced` (tightening applies immediately) |
 | Refresh token TTL | `template.yaml` → `RefreshTokenValidityDays` | 30 days |
-| Pending token pickup window | DynamoDB TTL on `pending#` items | 5 minutes |
+| Pending token pickup window | DynamoDB TTL + application-level TTL check in `fetchRenewalToken` | 5 minutes |
 | Region | `deploy.sh` → `AWS_REGION` | eu-west-1 |
 
 For a full explanation of the two-timer expiry model (inactivity + absolute), see [ARCHITECTURE.md](./ARCHITECTURE.md).

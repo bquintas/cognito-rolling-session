@@ -89,7 +89,7 @@ Implement a **self-managed renewal token** validated through Cognito's Custom Au
    - Generates a cryptographically random 256-bit `renewal_token`
    - Stores SHA-256 hash in DynamoDB (session record) with `issuedAt = now`, `lastUsedAt = now`, `maxInactivityDays = 30`
    - Stores plaintext as a **separate DynamoDB item** (`pending#<userSub>`) with a 5-minute TTL (auto-deleted by DynamoDB)
-   - Skips issuance if triggered by CUSTOM_AUTH (detects recently-written pending item)
+   - Skips issuance if triggered by CUSTOM_AUTH (detects `rotatedAt` within last 30s on the session record)
 4. Client calls `GET /renewal-token` (API Gateway, protected by Cognito Authorizer):
    - Returns `pendingToken` once then deletes it (one-time pickup)
    - Client stores `renewal_token` securely:
@@ -217,7 +217,7 @@ For production, consider adding a `DELETE /renewal-token` admin endpoint or a re
 | Separate app client recommended | Use one app client for normal login (with managed login) and another for CUSTOM_AUTH renewal. Cognito allows multiple app clients per user pool. |
 | Refresh token rotation + CUSTOM_AUTH | CUSTOM_AUTH is a full authentication — Cognito issues a brand new refresh token with full TTL. Rotation settings don't affect this path. ✅ |
 | Renewal token delivery | Via authenticated API Gateway endpoint (`GET /renewal-token`). Protected by Cognito Authorizer (ID token). One-time pickup enforced. |
-| PostAuth Lambda on CUSTOM_AUTH | Cognito fires PostAuthentication on all successful auths including CUSTOM_AUTH. Lambda detects and skips to avoid overwriting VerifyAuthChallenge's rotation. |
+| PostAuth Lambda on CUSTOM_AUTH | Cognito fires PostAuthentication on all successful auths including CUSTOM_AUTH. Lambda checks `rotatedAt` on the session record to detect and skip; `ConditionExpression` on `lastUsedAt` as a safety net. |
 | DynamoDB TTL | Set a TTL attribute = `lastUsedAt + maxInactivityDays` so expired records are auto-cleaned. |
 
 ## Configuration
