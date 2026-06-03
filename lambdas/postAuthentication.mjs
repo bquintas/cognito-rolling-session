@@ -33,11 +33,17 @@ export const handler = async (event) => {
   const existingRecord = await ddb.send(new GetItemCommand({
     TableName: TABLE_NAME,
     Key: { userSub: { S: userSub } },
-    ProjectionExpression: "pendingToken, lastUsedAt, issuedAt"
+    ProjectionExpression: "lastUsedAt, issuedAt"
   }));
 
-  if (existingRecord.Item?.pendingToken?.S) {
-    const lastUsedAt = parseInt(existingRecord.Item.lastUsedAt?.N || "0", 10);
+  // Check if VerifyAuthChallenge recently rotated (pending token exists = recent rotation)
+  const pendingRecord = await ddb.send(new GetItemCommand({
+    TableName: TABLE_NAME,
+    Key: { userSub: { S: `pending#${userSub}` } }
+  }));
+
+  if (pendingRecord.Item?.pendingToken?.S) {
+    const lastUsedAt = parseInt(existingRecord.Item?.lastUsedAt?.N || "0", 10);
     const secondsSinceUpdate = (Date.now() - lastUsedAt) / 1000;
     if (secondsSinceUpdate < 30) {
       console.log(`Skipping renewal token issuance — VerifyAuthChallenge already rotated (${secondsSinceUpdate.toFixed(1)}s ago) for user ${userSub}`);
@@ -69,16 +75,24 @@ export const handler = async (event) => {
         issuedAt: { N: String(existingIssuedAt) },  // Preserve original issuedAt
         lastUsedAt: { N: String(now) },
         maxInactivityDays: { N: String(MAX_INACTIVITY_DAYS) },
-        ttl: { N: String(ttlSeconds) },
-        // Store plaintext temporarily for client pickup (short-lived)
-        pendingToken: { S: renewalToken },
-        pendingTokenExpiry: { N: String(Math.floor(now / 1000) + 300) } // 5 min to pick up
+        ttl: { N: String(ttlSeconds) }
       },
       // Only write if no recent rotation occurred (lastUsedAt hasn't been updated
       // since our read, or the record doesn't exist yet)
       ConditionExpression: "attribute_not_exists(userSub) OR lastUsedAt = :expectedLastUsed",
       ExpressionAttributeValues: {
         ":expectedLastUsed": { N: existingRecord.Item?.lastUsedAt?.N || "0" }
+      }
+    }));
+
+    // Store plaintext renewal token as a SEPARATE item with 5-minute TTL.
+    // DynamoDB TTL auto-deletes it — no lingering plaintext beyond pickup window.
+    await ddb.send(new PutItemCommand({
+      TableName: TABLE_NAME,
+      Item: {
+        userSub: { S: `pending#${userSub}` },
+        pendingToken: { S: renewalToken },
+        ttl: { N: String(Math.floor(now / 1000) + 300) } // 5 min DynamoDB TTL
       }
     }));
 

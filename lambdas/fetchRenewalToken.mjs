@@ -10,7 +10,7 @@
  * Environment variables:
  *   TABLE_NAME - DynamoDB table name
  */
-import { DynamoDBClient, GetItemCommand, UpdateItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, GetItemCommand, DeleteItemCommand } from "@aws-sdk/client-dynamodb";
 
 const ddb = new DynamoDBClient({});
 const TABLE_NAME = process.env.TABLE_NAME || "CognitoRenewalTokens";
@@ -36,10 +36,10 @@ export const handler = async (event) => {
   }
 
   try {
-    // Read the pending token
+    // Read the pending token from the separate pending item (5-min TTL)
     const result = await ddb.send(new GetItemCommand({
       TableName: TABLE_NAME,
-      Key: { userSub: { S: userSub } }
+      Key: { userSub: { S: `pending#${userSub}` } }
     }));
 
     if (!result.Item || !result.Item.pendingToken) {
@@ -54,34 +54,12 @@ export const handler = async (event) => {
       };
     }
 
-    // Check if pending token has expired (5 min window from issuance)
-    const pendingExpiry = parseInt(result.Item.pendingTokenExpiry?.N || "0", 10);
-    if (pendingExpiry > 0 && Math.floor(Date.now() / 1000) > pendingExpiry) {
-      console.log(`Pending renewal token expired for user ${userSub}`);
-      // Clean up expired plaintext token immediately — don't leave it lingering until TTL
-      await ddb.send(new UpdateItemCommand({
-        TableName: TABLE_NAME,
-        Key: { userSub: { S: userSub } },
-        UpdateExpression: "REMOVE pendingToken, pendingTokenExpiry",
-        ConditionExpression: "attribute_exists(pendingToken)"
-      })).catch(() => {}); // Ignore if already removed
-      return {
-        statusCode: 410,
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          error: "Token expired",
-          message: "Pending renewal token has expired. Re-authenticate to get a new one."
-        })
-      };
-    }
-
     const renewalToken = result.Item.pendingToken.S;
 
-    // Remove the pending token (one-time pickup)
-    await ddb.send(new UpdateItemCommand({
+    // Delete the pending item (one-time pickup)
+    await ddb.send(new DeleteItemCommand({
       TableName: TABLE_NAME,
-      Key: { userSub: { S: userSub } },
-      UpdateExpression: "REMOVE pendingToken, pendingTokenExpiry",
+      Key: { userSub: { S: `pending#${userSub}` } },
       ConditionExpression: "attribute_exists(pendingToken)"
     }));
 
@@ -100,7 +78,7 @@ export const handler = async (event) => {
       })
     };
   } catch (error) {
-    console.error(`Error fetching renewal token for user ${userSub}:`, error);
+    console.error(`Error fetching renewal token for user ${userSub}:`, error.name, error.message);
 
     // Handle condition check failure (token already picked up by concurrent request)
     if (error.name === "ConditionalCheckFailedException") {

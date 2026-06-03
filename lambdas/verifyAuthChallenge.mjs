@@ -19,6 +19,8 @@ import { createHash, randomBytes, timingSafeEqual } from "crypto";
 const ddb = new DynamoDBClient({});
 const TABLE_NAME = process.env.TABLE_NAME || "CognitoRenewalTokens";
 const MAX_ABSOLUTE_SESSION_DAYS = parseInt(process.env.MAX_ABSOLUTE_SESSION_DAYS || "90", 10);
+const MAX_INACTIVITY_DAYS = parseInt(process.env.MAX_INACTIVITY_DAYS || "30", 10);
+const INACTIVITY_POLICY_MODE = process.env.INACTIVITY_POLICY_MODE || "enforced";
 
 export const handler = async (event) => {
   const userSub = event.request.userAttributes.sub;
@@ -45,7 +47,14 @@ export const handler = async (event) => {
     const storedHash = result.Item.tokenHash.S;
     const lastUsedAt = parseInt(result.Item.lastUsedAt.N, 10);
     const issuedAt = parseInt(result.Item.issuedAt.N, 10);
-    const maxInactivityDays = parseInt(result.Item.maxInactivityDays.N, 10);
+    const recordMaxInactivityDays = parseInt(result.Item.maxInactivityDays.N, 10);
+
+    // Inactivity policy mode:
+    //   "enforced" = use the stricter of env var vs DB value (policy tightening applies immediately)
+    //   "permissive" = use the DB value from session creation time (existing sessions keep original window)
+    const maxInactivityDays = INACTIVITY_POLICY_MODE === "enforced"
+      ? Math.min(MAX_INACTIVITY_DAYS, recordMaxInactivityDays)
+      : recordMaxInactivityDays;
 
     // Verify the provided token matches the stored hash (constant-time comparison)
     const providedHash = createHash("sha256").update(providedToken).digest("hex");
@@ -90,15 +99,23 @@ export const handler = async (event) => {
           issuedAt: { N: String(issuedAt) },  // Preserve original — never reset
           lastUsedAt: { N: String(now) },
           maxInactivityDays: { N: String(maxInactivityDays) },
-          ttl: { N: String(ttlSeconds) },
-          // Store new plaintext token for one-time client pickup via API
-          pendingToken: { S: newToken },
-          pendingTokenExpiry: { N: String(Math.floor(now / 1000) + 300) } // 5 min window
+          ttl: { N: String(ttlSeconds) }
         },
         // Optimistic lock: only succeed if tokenHash hasn't changed since our read
         ConditionExpression: "tokenHash = :expectedHash",
         ExpressionAttributeValues: {
           ":expectedHash": { S: storedHash }
+        }
+      }));
+
+      // Store plaintext renewal token as a SEPARATE item with 5-minute TTL.
+      // DynamoDB TTL auto-deletes it — no lingering plaintext beyond pickup window.
+      await ddb.send(new PutItemCommand({
+        TableName: TABLE_NAME,
+        Item: {
+          userSub: { S: `pending#${userSub}` },
+          pendingToken: { S: newToken },
+          ttl: { N: String(Math.floor(now / 1000) + 300) } // 5 min DynamoDB TTL
         }
       }));
 

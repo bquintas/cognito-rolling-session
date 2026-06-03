@@ -17,6 +17,15 @@ Parameters:
     Type: Number
     Default: 90
     Description: Hard cap on session lifetime (even active users must re-auth after this)
+  InactivityPolicyMode:
+    Type: String
+    Default: enforced
+    AllowedValues:
+      - enforced
+      - permissive
+    Description: >
+      "enforced" = always use the configured MaxInactivityDays (policy changes apply immediately to all sessions).
+      "permissive" = use the value stored at session creation time (existing sessions keep their original window).
 
 Globals:
   Function:
@@ -77,6 +86,7 @@ Resources:
           TABLE_NAME: !Ref RenewalTokensTable
           MAX_INACTIVITY_DAYS: !Ref MaxInactivityDays
           MAX_ABSOLUTE_SESSION_DAYS: !Ref MaxAbsoluteSessionDays
+          INACTIVITY_POLICY_MODE: !Ref InactivityPolicyMode
       Policies:
         - Statement:
             - Effect: Allow
@@ -111,7 +121,7 @@ Resources:
             - Effect: Allow
               Action:
                 - dynamodb:GetItem
-                - dynamodb:UpdateItem
+                - dynamodb:DeleteItem
               Resource: !GetAtt RenewalTokensTable.Arn
       Events:
         GetToken:
@@ -174,6 +184,7 @@ Resources:
       ClientName: !Sub "rolling-session-client-${Environment}"
       UserPoolId: !Ref UserPool
       GenerateSecret: false
+      PreventUserExistenceErrors: ENABLED
       ExplicitAuthFlows:
         - ALLOW_CUSTOM_AUTH
         - ALLOW_USER_SRP_AUTH
