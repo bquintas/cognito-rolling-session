@@ -159,14 +159,16 @@ If a user's session exceeds `MAX_ABSOLUTE_SESSION_DAYS` (even if active daily):
 | Property | Implementation |
 |----------|---------------|
 | Rolling inactivity window | `lastUsedAt` checked against `maxInactivityDays` |
-| Absolute session cap | `issuedAt` checked against `MAX_ABSOLUTE_SESSION_DAYS` (never resets, preserved across rotations) |
+| Absolute session cap | `issuedAt` checked against `MAX_ABSOLUTE_SESSION_DAYS` (never resets, preserved across rotations and PostAuth re-issuance) |
 | Token rotation | New `renewal_token` issued on each successful renewal |
-| Concurrent rotation protection | `ConditionExpression` on `PutItem` ensures only one concurrent request wins; losers are rejected |
+| Concurrent rotation protection | `ConditionExpression` on `PutItem` in both VerifyAuthChallenge and PostAuthentication ensures neither clobbers the other |
+| Constant-time hash comparison | `crypto.timingSafeEqual` prevents timing side-channel on token validation |
 | Stolen token detection | Old token invalidated immediately on rotation |
 | Hash-only storage | DynamoDB stores SHA-256 hash, never plaintext |
 | One-time token delivery | `pendingToken` deleted after first `GET /renewal-token` call |
+| Expired token cleanup | `pendingToken` actively deleted on expiry (not left for DynamoDB TTL) |
 | Revocation | Delete DynamoDB record → user must re-auth |
-| No duplicate issuance | PostAuth Lambda skips if VerifyAuthChallenge recently rotated |
+| No duplicate issuance | PostAuth Lambda skips if VerifyAuthChallenge recently rotated; `ConditionExpression` as fallback |
 | Least-privilege IAM | Each Lambda scoped to only the DynamoDB actions it uses |
 | Device binding (optional) | Tie renewal token to device fingerprint |
 | MFA enforcement (optional) | Force MFA every N renewals via counter in DynamoDB |
