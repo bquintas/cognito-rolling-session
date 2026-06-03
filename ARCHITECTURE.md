@@ -157,6 +157,37 @@ If a user's session exceeds `MAX_ABSOLUTE_SESSION_DAYS` (even if active daily):
 3. App redirects to login screen
 4. User re-authenticates → new `issuedAt` starts the 90-day clock from zero
 
+## Session Revocation (Manual)
+
+If a renewal token is compromised or a user needs to be force-logged-out, delete their session record from DynamoDB:
+
+```bash
+# Revoke a specific user's session (forces full re-authentication)
+aws dynamodb delete-item \
+  --table-name "CognitoRenewalTokens-poc" \
+  --key '{"userSub": {"S": "<user-sub-uuid>"}}' \
+  --region eu-west-1
+
+# Also delete any pending token (if pickup hasn't happened yet)
+aws dynamodb delete-item \
+  --table-name "CognitoRenewalTokens-poc" \
+  --key '{"userSub": {"S": "pending#<user-sub-uuid>"}}' \
+  --region eu-west-1
+```
+
+After deletion, the next renewal attempt will fail (`No renewal token found`) and the user will be redirected to the login screen.
+
+To additionally invalidate Cognito's own refresh token (belt-and-suspenders):
+
+```bash
+aws cognito-idp admin-user-global-sign-out \
+  --user-pool-id "<user-pool-id>" \
+  --username "<user-email>" \
+  --region eu-west-1
+```
+
+For production, consider adding a `DELETE /renewal-token` admin endpoint or a revocation flag in the DynamoDB record.
+
 ## Security Properties
 
 | Property | Implementation |

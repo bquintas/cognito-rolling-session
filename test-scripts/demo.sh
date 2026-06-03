@@ -40,7 +40,7 @@ USER_POOL_ID="${USER_POOL_ID:?'Set USER_POOL_ID from stack output'}"
 CLIENT_ID="${CLIENT_ID:?'Set CLIENT_ID from stack output'}"
 API_ENDPOINT="${API_ENDPOINT:?'Set API_ENDPOINT from stack output'}"
 TEST_EMAIL="testuser-poc@example.com"
-TEST_PASSWORD="TestPass123!"
+TEST_PASSWORD="${TEST_PASSWORD:-$(openssl rand -base64 16)}"
 
 log() { echo -e "${BLUE}[$(date '+%H:%M:%S')]${NC} $1"; }
 success() { echo -e "${GREEN}[✓]${NC} $1"; }
