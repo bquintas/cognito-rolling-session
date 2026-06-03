@@ -7,7 +7,7 @@ A fully self-contained stack you can deploy in any AWS account to demonstrate th
 - **Cognito User Pool** with Custom Auth Lambda triggers
 - **DynamoDB table** for renewal token storage
 - **API Gateway** (Cognito-authorized) for secure renewal token delivery
-- **5 Lambda functions** covering the full lifecycle
+- **6 Lambda functions** covering the full lifecycle
 - **Demo script** that walks through the entire flow with colored output and logging
 
 ## Structure
@@ -21,6 +21,7 @@ A fully self-contained stack you can deploy in any AWS account to demonstrate th
 │   ├── createAuthChallenge.mjs     # Asks client for renewal token
 │   ├── verifyAuthChallenge.mjs     # Validates against DynamoDB, rotates token
 │   ├── postAuthentication.mjs      # Issues renewal token on initial login
+│   ├── postConfirmation.mjs       # Revokes session on password change
 │   └── fetchRenewalToken.mjs       # API handler: one-time token pickup
 ├── client-example/
 │   └── renewSession.ts             # Client-side renewal logic (TypeScript)

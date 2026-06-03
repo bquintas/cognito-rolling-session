@@ -48,11 +48,16 @@ Cognito refresh tokens have a fixed absolute expiration (no rolling/inactivity-b
 | Constant-time hash comparison | `crypto.timingSafeEqual` |
 | One-time token delivery | Pending item deleted on fetch; app-level TTL check rejects expired tokens |
 | Stolen token detection | Old hash invalidated immediately on rotation |
+| Password change revocation | `PostConfirmation` Lambda deletes session on password reset — stolen tokens die immediately |
 | Hash-only storage | DynamoDB stores SHA-256 hash, never plaintext (pending items auto-expire in 5 min) |
 | Least-privilege IAM | Each Lambda scoped to only the DynamoDB actions it needs |
 | User enumeration prevention | `PreventUserExistenceErrors: ENABLED` on UserPoolClient |
 
 ## Session Revocation
+
+**Automatic:** Password change (forgot-password flow) triggers `PostConfirmation` Lambda which deletes the session record immediately.
+
+**Manual:** Delete the DynamoDB records directly:
 
 ```bash
 # Kill a user's session (forces full re-authentication)
@@ -93,7 +98,7 @@ aws cognito-idp admin-user-global-sign-out \
 
 ## Cost
 
-< $1/month for 10K users (5 Lambdas at 128MB + DynamoDB on-demand + API Gateway). Scales linearly.
+< $1/month for 10K users (6 Lambdas at 128MB + DynamoDB on-demand + API Gateway). Scales linearly.
 
 ## References
 
