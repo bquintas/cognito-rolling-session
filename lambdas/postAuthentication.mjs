@@ -26,27 +26,22 @@ export const handler = async (event) => {
   }
 
   // Skip if this was a CUSTOM_AUTH renewal — VerifyAuthChallenge already handled rotation.
-  // PostAuthentication doesn't receive the session array, so we check if a pendingToken
-  // was recently written by VerifyAuthChallenge (within last 30 seconds).
+  // Detection: if the session record has a `rotatedAt` field written within the last 30 seconds,
+  // it means VerifyAuthChallenge just rotated the token. This is more reliable than checking
+  // the pending item (which may already be fetched/deleted by the client).
   const userSub = event.request.userAttributes.sub;
 
   const existingRecord = await ddb.send(new GetItemCommand({
     TableName: TABLE_NAME,
     Key: { userSub: { S: userSub } },
-    ProjectionExpression: "lastUsedAt, issuedAt"
+    ProjectionExpression: "lastUsedAt, issuedAt, rotatedAt"
   }));
 
-  // Check if VerifyAuthChallenge recently rotated (pending token exists = recent rotation)
-  const pendingRecord = await ddb.send(new GetItemCommand({
-    TableName: TABLE_NAME,
-    Key: { userSub: { S: `pending#${userSub}` } }
-  }));
-
-  if (pendingRecord.Item?.pendingToken?.S) {
-    const lastUsedAt = parseInt(existingRecord.Item?.lastUsedAt?.N || "0", 10);
-    const secondsSinceUpdate = (Date.now() - lastUsedAt) / 1000;
-    if (secondsSinceUpdate < 30) {
-      console.log(`Skipping renewal token issuance — VerifyAuthChallenge already rotated (${secondsSinceUpdate.toFixed(1)}s ago) for user ${userSub}`);
+  if (existingRecord.Item?.rotatedAt?.N) {
+    const rotatedAt = parseInt(existingRecord.Item.rotatedAt.N, 10);
+    const secondsSinceRotation = (Date.now() - rotatedAt) / 1000;
+    if (secondsSinceRotation < 30) {
+      console.log(`Skipping renewal token issuance — VerifyAuthChallenge already rotated (${secondsSinceRotation.toFixed(1)}s ago) for user ${userSub}`);
       return event;
     }
   }

@@ -54,6 +54,26 @@ export const handler = async (event) => {
       };
     }
 
+    // Application-level TTL check — DynamoDB TTL deletion can lag up to 48 hours,
+    // so we enforce the 5-minute window ourselves before serving the token.
+    const ttl = parseInt(result.Item.ttl?.N || "0", 10);
+    if (ttl > 0 && Math.floor(Date.now() / 1000) > ttl) {
+      console.log(`Pending renewal token expired for user ${userSub} (TTL exceeded)`);
+      // Clean up the expired item immediately
+      await ddb.send(new DeleteItemCommand({
+        TableName: TABLE_NAME,
+        Key: { userSub: { S: `pending#${userSub}` } }
+      })).catch(() => {});
+      return {
+        statusCode: 404,
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          error: "Token expired",
+          message: "Pending renewal token has expired. Re-authenticate to get a new one."
+        })
+      };
+    }
+
     const renewalToken = result.Item.pendingToken.S;
 
     // Delete the pending item (one-time pickup)

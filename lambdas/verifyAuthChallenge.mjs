@@ -13,7 +13,7 @@
  *   TABLE_NAME - DynamoDB table name (default: "CognitoRenewalTokens")
  *   MAX_ABSOLUTE_SESSION_DAYS - Hard cap on session lifetime (default: 90)
  */
-import { DynamoDBClient, GetItemCommand, PutItemCommand, DeleteItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, GetItemCommand, PutItemCommand, DeleteItemCommand, TransactWriteItemsCommand } from "@aws-sdk/client-dynamodb";
 import { createHash, randomBytes, timingSafeEqual } from "crypto";
 
 const ddb = new DynamoDBClient({});
@@ -86,47 +86,42 @@ export const handler = async (event) => {
       const now = Date.now();
       const ttlSeconds = Math.floor(now / 1000) + (maxInactivityDays * 86400);
 
-      // FIX: Use ConditionExpression to prevent TOCTOU race condition.
-      // If a concurrent request already rotated the token, this will fail
-      // with ConditionalCheckFailedException, rejecting the duplicate.
-      // FIX: Preserve original issuedAt (not reset to now) so the absolute
-      // session limit counts from the original login time.
-      await ddb.send(new PutItemCommand({
-        TableName: TABLE_NAME,
-        Item: {
-          userSub: { S: userSub },
-          tokenHash: { S: newHash },
-          issuedAt: { N: String(issuedAt) },  // Preserve original — never reset
-          lastUsedAt: { N: String(now) },
-          maxInactivityDays: { N: String(maxInactivityDays) },
-          ttl: { N: String(ttlSeconds) }
-        },
-        // Optimistic lock: only succeed if tokenHash hasn't changed since our read
-        ConditionExpression: "tokenHash = :expectedHash",
-        ExpressionAttributeValues: {
-          ":expectedHash": { S: storedHash }
-        }
+      // Atomic write: session record + pending token in one transaction.
+      // If the ConditionExpression fails (concurrent rotation), neither write commits.
+      // This prevents partial failures where the session is rotated but no pending token exists.
+      await ddb.send(new TransactWriteItemsCommand({
+        TransactItems: [
+          {
+            Put: {
+              TableName: TABLE_NAME,
+              Item: {
+                userSub: { S: userSub },
+                tokenHash: { S: newHash },
+                issuedAt: { N: String(issuedAt) },  // Preserve original — never reset
+                lastUsedAt: { N: String(now) },
+                maxInactivityDays: { N: String(maxInactivityDays) },
+                ttl: { N: String(ttlSeconds) },
+                rotatedAt: { N: String(now) }  // Marker for PostAuth skip logic
+              },
+              // Optimistic lock: only succeed if tokenHash hasn't changed since our read
+              ConditionExpression: "tokenHash = :expectedHash",
+              ExpressionAttributeValues: {
+                ":expectedHash": { S: storedHash }
+              }
+            }
+          },
+          {
+            Put: {
+              TableName: TABLE_NAME,
+              Item: {
+                userSub: { S: `pending#${userSub}` },
+                pendingToken: { S: newToken },
+                ttl: { N: String(Math.floor(now / 1000) + 300) } // 5 min DynamoDB TTL
+              }
+            }
+          }
+        ]
       }));
-
-      // Store plaintext renewal token as a SEPARATE item with 5-minute TTL.
-      // DynamoDB TTL auto-deletes it — no lingering plaintext beyond pickup window.
-      await ddb.send(new PutItemCommand({
-        TableName: TABLE_NAME,
-        Item: {
-          userSub: { S: `pending#${userSub}` },
-          pendingToken: { S: newToken },
-          ttl: { N: String(Math.floor(now / 1000) + 300) } // 5 min DynamoDB TTL
-        }
-      }));
-
-      // NOTE: The new renewal token needs to be delivered to the client.
-      // Options:
-      //   1. Via Pre Token Generation Lambda (inject as custom claim)
-      //   2. Via a separate API call after authentication succeeds
-      //   3. Via challengeMetadata (limited, not ideal for secrets)
-      // 
-      // For the POC, we'll use option 2 (separate API call).
-      // The client will call GET /renewal-token after successful auth.
 
       console.log(`Renewal token rotated for user ${userSub}`);
       event.response.answerCorrect = true;
@@ -145,12 +140,12 @@ export const handler = async (event) => {
       event.response.answerCorrect = false;
     }
   } catch (error) {
-    if (error.name === "ConditionalCheckFailedException") {
+    if (error.name === "ConditionalCheckFailedException" || error.name === "TransactionCanceledException") {
       // Another concurrent request already rotated the token (TOCTOU protection)
       console.log(`Token already rotated by concurrent request for user ${userSub}`);
       event.response.answerCorrect = false;
     } else {
-      console.error(`Error verifying renewal token for user ${userSub}:`, error);
+      console.error(`Error verifying renewal token for user ${userSub}:`, error.name, error.message);
       event.response.answerCorrect = false;
     }
   }
