@@ -130,16 +130,17 @@ Implement a **self-managed renewal token** validated through Cognito's Custom Au
    })
    ```
 6. Cognito invokes **Verify Auth Challenge**:
-   - Hashes provided token → compares with DynamoDB record
-   - Checks `(now - lastUsedAt) < maxInactivityDays` (rolling, 30 days)
+   - Hashes provided token → compares with DynamoDB record (`timingSafeEqual`)
+   - Checks `(now - lastUsedAt) < maxInactivityDays` (rolling, policy-mode aware)
    - Checks `(now - issuedAt) < MAX_ABSOLUTE_SESSION_DAYS` (hard cap, 90 days)
-   - If valid: rotates the renewal token (new random, store new hash + pendingToken) with optimistic locking (`ConditionExpression` on `tokenHash`), returns `answerCorrect: true`
-   - If concurrent rotation detected (token already changed): returns `answerCorrect: false`
+   - If valid: **atomically** rotates the renewal token via `TransactWriteItems` (session record + pending token in one transaction, with `ConditionExpression` on `tokenHash`)
+   - Sets `rotatedAt = now` on the session record (used by PostAuth to detect recent rotation)
+   - If concurrent rotation detected (transaction cancelled): returns `answerCorrect: false`
    - If invalid or expired: returns `answerCorrect: false` → user must re-login
 7. Cognito invokes **Define Auth Challenge** → sees success → `issueTokens: true`
 8. Cognito issues **fresh tokens** (access + ID + refresh with full 30-day TTL)
-9. **Post Authentication Lambda** fires but **skips** issuance (detects VerifyAuthChallenge already rotated)
-10. Client calls `GET /renewal-token` to pick up the rotated token (one-time)
+9. **Post Authentication Lambda** fires but **skips** issuance (detects `rotatedAt` within last 30s on the session record — immune to pending token already being fetched by client)
+10. Client calls `GET /renewal-token` to pick up the rotated token (one-time, with application-level TTL enforcement)
 
 ### 4. Forced Re-authentication (Inactive User)
 
@@ -192,17 +193,18 @@ For production, consider adding a `DELETE /renewal-token` admin endpoint or a re
 
 | Property | Implementation |
 |----------|---------------|
-| Rolling inactivity window | `lastUsedAt` checked against `maxInactivityDays` |
+| Rolling inactivity window | `lastUsedAt` checked against `maxInactivityDays` (policy-mode configurable) |
 | Absolute session cap | `issuedAt` checked against `MAX_ABSOLUTE_SESSION_DAYS` (never resets, preserved across rotations and PostAuth re-issuance) |
-| Token rotation | New `renewal_token` issued on each successful renewal |
-| Concurrent rotation protection | `ConditionExpression` on `PutItem` in both VerifyAuthChallenge and PostAuthentication ensures neither clobbers the other |
+| Atomic token rotation | `TransactWriteItems` ensures session record + pending token are written together — no partial failures |
+| Concurrent rotation protection | `ConditionExpression` on `tokenHash` within the transaction; PostAuth uses `ConditionExpression` on `lastUsedAt` |
+| Robust PostAuth skip | Checks `rotatedAt` marker on session record (immune to client fetching pending token before PostAuth fires) |
 | Constant-time hash comparison | `crypto.timingSafeEqual` prevents timing side-channel on token validation |
 | Stolen token detection | Old token invalidated immediately on rotation |
 | Hash-only storage | DynamoDB stores SHA-256 hash, never plaintext |
 | One-time token delivery | `pendingToken` item deleted after first `GET /renewal-token` call; DynamoDB TTL auto-deletes after 5 minutes if uncollected |
-| Expired token cleanup | Separate `pending#` items have their own 5-minute DynamoDB TTL — no plaintext lingers |
+| Expired token cleanup | Application-level TTL check in `fetchRenewalToken` + DynamoDB TTL as backup — expired tokens never served |
 | Revocation | Delete DynamoDB record → user must re-auth |
-| No duplicate issuance | PostAuth Lambda skips if VerifyAuthChallenge recently rotated; `ConditionExpression` as fallback |
+| No duplicate issuance | PostAuth checks `rotatedAt` on session record (not dependent on pending token existence); `ConditionExpression` as fallback |
 | Least-privilege IAM | Each Lambda scoped to only the DynamoDB actions it uses |
 | Device binding (optional) | Tie renewal token to device fingerprint |
 | MFA enforcement (optional) | Force MFA every N renewals via counter in DynamoDB |
