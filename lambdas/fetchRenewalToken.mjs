@@ -58,6 +58,13 @@ export const handler = async (event) => {
     const pendingExpiry = parseInt(result.Item.pendingTokenExpiry?.N || "0", 10);
     if (pendingExpiry > 0 && Math.floor(Date.now() / 1000) > pendingExpiry) {
       console.log(`Pending renewal token expired for user ${userSub}`);
+      // Clean up expired plaintext token immediately — don't leave it lingering until TTL
+      await ddb.send(new UpdateItemCommand({
+        TableName: TABLE_NAME,
+        Key: { userSub: { S: userSub } },
+        UpdateExpression: "REMOVE pendingToken, pendingTokenExpiry",
+        ConditionExpression: "attribute_exists(pendingToken)"
+      })).catch(() => {}); // Ignore if already removed
       return {
         statusCode: 410,
         headers: { "Content-Type": "application/json" },

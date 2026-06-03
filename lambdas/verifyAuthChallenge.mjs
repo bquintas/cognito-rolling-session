@@ -14,7 +14,7 @@
  *   MAX_ABSOLUTE_SESSION_DAYS - Hard cap on session lifetime (default: 90)
  */
 import { DynamoDBClient, GetItemCommand, PutItemCommand, DeleteItemCommand } from "@aws-sdk/client-dynamodb";
-import { createHash, randomBytes } from "crypto";
+import { createHash, randomBytes, timingSafeEqual } from "crypto";
 
 const ddb = new DynamoDBClient({});
 const TABLE_NAME = process.env.TABLE_NAME || "CognitoRenewalTokens";
@@ -47,9 +47,9 @@ export const handler = async (event) => {
     const issuedAt = parseInt(result.Item.issuedAt.N, 10);
     const maxInactivityDays = parseInt(result.Item.maxInactivityDays.N, 10);
 
-    // Verify the provided token matches the stored hash
+    // Verify the provided token matches the stored hash (constant-time comparison)
     const providedHash = createHash("sha256").update(providedToken).digest("hex");
-    const isTokenValid = providedHash === storedHash;
+    const isTokenValid = timingSafeEqual(Buffer.from(providedHash, "hex"), Buffer.from(storedHash, "hex"));
 
     // Check 1: Inactivity window (rolling — resets on each renewal)
     const maxInactivityMs = maxInactivityDays * 24 * 60 * 60 * 1000;

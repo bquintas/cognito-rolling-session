@@ -33,7 +33,7 @@ export const handler = async (event) => {
   const existingRecord = await ddb.send(new GetItemCommand({
     TableName: TABLE_NAME,
     Key: { userSub: { S: userSub } },
-    ProjectionExpression: "pendingToken, lastUsedAt"
+    ProjectionExpression: "pendingToken, lastUsedAt, issuedAt"
   }));
 
   if (existingRecord.Item?.pendingToken?.S) {
@@ -52,24 +52,45 @@ export const handler = async (event) => {
   const renewalToken = randomBytes(32).toString("hex");
   const tokenHash = createHash("sha256").update(renewalToken).digest("hex");
 
-  // Store hash in DynamoDB
-  await ddb.send(new PutItemCommand({
-    TableName: TABLE_NAME,
-    Item: {
-      userSub: { S: userSub },
-      tokenHash: { S: tokenHash },
-      issuedAt: { N: String(now) },
-      lastUsedAt: { N: String(now) },
-      maxInactivityDays: { N: String(MAX_INACTIVITY_DAYS) },
-      ttl: { N: String(ttlSeconds) },
-      // Store plaintext temporarily for client pickup (short-lived)
-      // In production, use a more secure delivery mechanism
-      pendingToken: { S: renewalToken },
-      pendingTokenExpiry: { N: String(Math.floor(now / 1000) + 300) } // 5 min to pick up
-    }
-  }));
+  // Preserve the original issuedAt if a record already exists (absolute session limit
+  // must count from the very first login, not from re-issuance).
+  const existingIssuedAt = existingRecord.Item?.issuedAt?.N
+    ? parseInt(existingRecord.Item.issuedAt.N, 10)
+    : now;
 
-  console.log(`Renewal token issued for user ${userSub}`);
+  // Store hash in DynamoDB with ConditionExpression to avoid clobbering a
+  // VerifyAuthChallenge rotation that happened between our GetItem and now.
+  try {
+    await ddb.send(new PutItemCommand({
+      TableName: TABLE_NAME,
+      Item: {
+        userSub: { S: userSub },
+        tokenHash: { S: tokenHash },
+        issuedAt: { N: String(existingIssuedAt) },  // Preserve original issuedAt
+        lastUsedAt: { N: String(now) },
+        maxInactivityDays: { N: String(MAX_INACTIVITY_DAYS) },
+        ttl: { N: String(ttlSeconds) },
+        // Store plaintext temporarily for client pickup (short-lived)
+        pendingToken: { S: renewalToken },
+        pendingTokenExpiry: { N: String(Math.floor(now / 1000) + 300) } // 5 min to pick up
+      },
+      // Only write if no recent rotation occurred (lastUsedAt hasn't been updated
+      // since our read, or the record doesn't exist yet)
+      ConditionExpression: "attribute_not_exists(userSub) OR lastUsedAt = :expectedLastUsed",
+      ExpressionAttributeValues: {
+        ":expectedLastUsed": { N: existingRecord.Item?.lastUsedAt?.N || "0" }
+      }
+    }));
+
+    console.log(`Renewal token issued for user ${userSub}`);
+  } catch (error) {
+    if (error.name === "ConditionalCheckFailedException") {
+      // VerifyAuthChallenge rotated the record between our read and write — skip safely
+      console.log(`Skipping renewal token issuance — concurrent rotation detected for user ${userSub}`);
+    } else {
+      throw error;
+    }
+  }
 
   return event;
 };
