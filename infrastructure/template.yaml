@@ -78,8 +78,13 @@ Resources:
           MAX_INACTIVITY_DAYS: !Ref MaxInactivityDays
           MAX_ABSOLUTE_SESSION_DAYS: !Ref MaxAbsoluteSessionDays
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref RenewalTokensTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+                - dynamodb:DeleteItem
+              Resource: !GetAtt RenewalTokensTable.Arn
 
   PostAuthenticationFunction:
     Type: AWS::Serverless::Function
@@ -88,8 +93,12 @@ Resources:
       CodeUri: ../lambdas/
       Handler: postAuthentication.handler
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref RenewalTokensTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:PutItem
+              Resource: !GetAtt RenewalTokensTable.Arn
 
   FetchRenewalTokenFunction:
     Type: AWS::Serverless::Function
@@ -98,8 +107,12 @@ Resources:
       CodeUri: ../lambdas/
       Handler: fetchRenewalToken.handler
       Policies:
-        - DynamoDBCrudPolicy:
-            TableName: !Ref RenewalTokensTable
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:GetItem
+                - dynamodb:UpdateItem
+              Resource: !GetAtt RenewalTokensTable.Arn
       Events:
         GetToken:
           Type: Api

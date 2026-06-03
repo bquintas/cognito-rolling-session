@@ -18,7 +18,9 @@ const TABLE_NAME = process.env.TABLE_NAME || "CognitoRenewalTokens";
 export const handler = async (event) => {
   console.log("FetchRenewalToken invoked", JSON.stringify({
     requestId: event.requestContext?.requestId,
-    claims: event.requestContext?.authorizer?.claims?.sub
+    claims: event.requestContext?.authorizer?.claims?.sub,
+    sourceIp: event.requestContext?.identity?.sourceIp,
+    userAgent: event.requestContext?.identity?.userAgent
   }));
 
   // Extract user sub from Cognito authorizer claims

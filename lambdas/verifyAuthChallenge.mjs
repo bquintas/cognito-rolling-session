@@ -77,18 +77,28 @@ export const handler = async (event) => {
       const now = Date.now();
       const ttlSeconds = Math.floor(now / 1000) + (maxInactivityDays * 86400);
 
+      // FIX: Use ConditionExpression to prevent TOCTOU race condition.
+      // If a concurrent request already rotated the token, this will fail
+      // with ConditionalCheckFailedException, rejecting the duplicate.
+      // FIX: Preserve original issuedAt (not reset to now) so the absolute
+      // session limit counts from the original login time.
       await ddb.send(new PutItemCommand({
         TableName: TABLE_NAME,
         Item: {
           userSub: { S: userSub },
           tokenHash: { S: newHash },
-          issuedAt: { N: String(now) },
+          issuedAt: { N: String(issuedAt) },  // Preserve original — never reset
           lastUsedAt: { N: String(now) },
           maxInactivityDays: { N: String(maxInactivityDays) },
           ttl: { N: String(ttlSeconds) },
           // Store new plaintext token for one-time client pickup via API
           pendingToken: { S: newToken },
           pendingTokenExpiry: { N: String(Math.floor(now / 1000) + 300) } // 5 min window
+        },
+        // Optimistic lock: only succeed if tokenHash hasn't changed since our read
+        ConditionExpression: "tokenHash = :expectedHash",
+        ExpressionAttributeValues: {
+          ":expectedHash": { S: storedHash }
         }
       }));
 
@@ -118,8 +128,14 @@ export const handler = async (event) => {
       event.response.answerCorrect = false;
     }
   } catch (error) {
-    console.error(`Error verifying renewal token for user ${userSub}:`, error);
-    event.response.answerCorrect = false;
+    if (error.name === "ConditionalCheckFailedException") {
+      // Another concurrent request already rotated the token (TOCTOU protection)
+      console.log(`Token already rotated by concurrent request for user ${userSub}`);
+      event.response.answerCorrect = false;
+    } else {
+      console.error(`Error verifying renewal token for user ${userSub}:`, error);
+      event.response.answerCorrect = false;
+    }
   }
 
   return event;

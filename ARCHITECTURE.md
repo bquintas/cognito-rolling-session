@@ -130,7 +130,8 @@ Implement a **self-managed renewal token** validated through Cognito's Custom Au
    - Hashes provided token → compares with DynamoDB record
    - Checks `(now - lastUsedAt) < maxInactivityDays` (rolling, 30 days)
    - Checks `(now - issuedAt) < MAX_ABSOLUTE_SESSION_DAYS` (hard cap, 90 days)
-   - If valid: rotates the renewal token (new random, store new hash + pendingToken), returns `answerCorrect: true`
+   - If valid: rotates the renewal token (new random, store new hash + pendingToken) with optimistic locking (`ConditionExpression` on `tokenHash`), returns `answerCorrect: true`
+   - If concurrent rotation detected (token already changed): returns `answerCorrect: false`
    - If invalid or expired: returns `answerCorrect: false` → user must re-login
 7. Cognito invokes **Define Auth Challenge** → sees success → `issueTokens: true`
 8. Cognito issues **fresh tokens** (access + ID + refresh with full 30-day TTL)
@@ -158,13 +159,15 @@ If a user's session exceeds `MAX_ABSOLUTE_SESSION_DAYS` (even if active daily):
 | Property | Implementation |
 |----------|---------------|
 | Rolling inactivity window | `lastUsedAt` checked against `maxInactivityDays` |
-| Absolute session cap | `issuedAt` checked against `MAX_ABSOLUTE_SESSION_DAYS` (never resets) |
+| Absolute session cap | `issuedAt` checked against `MAX_ABSOLUTE_SESSION_DAYS` (never resets, preserved across rotations) |
 | Token rotation | New `renewal_token` issued on each successful renewal |
+| Concurrent rotation protection | `ConditionExpression` on `PutItem` ensures only one concurrent request wins; losers are rejected |
 | Stolen token detection | Old token invalidated immediately on rotation |
 | Hash-only storage | DynamoDB stores SHA-256 hash, never plaintext |
 | One-time token delivery | `pendingToken` deleted after first `GET /renewal-token` call |
 | Revocation | Delete DynamoDB record → user must re-auth |
 | No duplicate issuance | PostAuth Lambda skips if VerifyAuthChallenge recently rotated |
+| Least-privilege IAM | Each Lambda scoped to only the DynamoDB actions it uses |
 | Device binding (optional) | Tie renewal token to device fingerprint |
 | MFA enforcement (optional) | Force MFA every N renewals via counter in DynamoDB |
 
