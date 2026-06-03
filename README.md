@@ -111,8 +111,9 @@ Open CloudWatch Log Groups in the AWS Console:
 |-----------|----------------|---------|
 | Inactivity window | `template.yaml` → `MaxInactivityDays` | 30 days |
 | Absolute session limit | `template.yaml` → `MaxAbsoluteSessionDays` | 90 days |
+| Inactivity policy mode | `template.yaml` → `InactivityPolicyMode` | `enforced` (tightening applies immediately) |
 | Refresh token TTL | `template.yaml` → `RefreshTokenValidityDays` | 30 days |
-| Pending token pickup window | `postAuthentication.mjs` → `pendingTokenExpiry` | 5 minutes |
+| Pending token pickup window | DynamoDB TTL on `pending#` items | 5 minutes |
 | Region | `deploy.sh` → `AWS_REGION` | eu-west-1 |
 
 For a full explanation of the two-timer expiry model (inactivity + absolute), see [ARCHITECTURE.md](./ARCHITECTURE.md).
@@ -123,6 +124,7 @@ For a full explanation of the two-timer expiry model (inactivity + absolute), se
 |-----|-----------------|
 | Uses `ADMIN_USER_PASSWORD_AUTH` for demo simplicity | Use SRP or managed login for initial auth |
 | Single renewal token per user (last login wins) | Multi-device: one token per (user, device) pair |
-| `pendingToken` stored in plaintext in DynamoDB briefly | Encrypt at rest, minimize exposure window |
 | No monitoring/alerting | CloudWatch alarms on failed renewals, DynamoDB throttling |
 | No WAF protection on API | Add WAF rules to prevent brute-force on renewal endpoint |
+| No CloudWatch Log encryption/retention configured | Add explicit LogGroups with KMS + retention policy |
+| No API Gateway access logging | Add AccessLogSetting for HTTP-level audit trail |

@@ -54,14 +54,17 @@ Implement a **self-managed renewal token** validated through Cognito's Custom Au
                     │         DynamoDB Table            │
                     │   "CognitoRenewalTokens"         │
                     │                                   │
-                    │  PK: userSub (String)             │
-                    │  tokenHash (String, SHA-256)      │
-                    │  issuedAt (Number, epoch ms)      │
-                    │  lastUsedAt (Number, epoch ms)    │
-                    │  maxInactivityDays (Number)       │
-                    │  pendingToken (String, transient)  │
-                    │  ttl (Number, DynamoDB TTL)       │
-                    │  deviceId (String, optional)      │
+                    │  Session records (PK: userSub):   │
+                    │    tokenHash (String, SHA-256)    │
+                    │    issuedAt (Number, epoch ms)    │
+                    │    lastUsedAt (Number, epoch ms)  │
+                    │    maxInactivityDays (Number)     │
+                    │    ttl (Number, DynamoDB TTL)     │
+                    │    deviceId (String, optional)    │
+                    │                                   │
+                    │  Pending tokens (PK: pending#sub):│
+                    │    pendingToken (String, plain)   │
+                    │    ttl (Number, 5-min DynamoDB)   │
                     └──────────────────────────────────┘
 ```
 
@@ -84,9 +87,9 @@ Implement a **self-managed renewal token** validated through Cognito's Custom Au
 2. Cognito issues: access token, ID token, refresh token (TTL = 30 days)
 3. **Post Authentication Lambda** fires:
    - Generates a cryptographically random 256-bit `renewal_token`
-   - Stores SHA-256 hash in DynamoDB with `issuedAt = now`, `lastUsedAt = now`, `maxInactivityDays = 30`
-   - Stores plaintext as `pendingToken` in DynamoDB (5 min pickup window)
-   - Skips issuance if triggered by CUSTOM_AUTH (detects recently-written pendingToken)
+   - Stores SHA-256 hash in DynamoDB (session record) with `issuedAt = now`, `lastUsedAt = now`, `maxInactivityDays = 30`
+   - Stores plaintext as a **separate DynamoDB item** (`pending#<userSub>`) with a 5-minute TTL (auto-deleted by DynamoDB)
+   - Skips issuance if triggered by CUSTOM_AUTH (detects recently-written pending item)
 4. Client calls `GET /renewal-token` (API Gateway, protected by Cognito Authorizer):
    - Returns `pendingToken` once then deletes it (one-time pickup)
    - Client stores `renewal_token` securely:
@@ -165,8 +168,8 @@ If a user's session exceeds `MAX_ABSOLUTE_SESSION_DAYS` (even if active daily):
 | Constant-time hash comparison | `crypto.timingSafeEqual` prevents timing side-channel on token validation |
 | Stolen token detection | Old token invalidated immediately on rotation |
 | Hash-only storage | DynamoDB stores SHA-256 hash, never plaintext |
-| One-time token delivery | `pendingToken` deleted after first `GET /renewal-token` call |
-| Expired token cleanup | `pendingToken` actively deleted on expiry (not left for DynamoDB TTL) |
+| One-time token delivery | `pendingToken` item deleted after first `GET /renewal-token` call; DynamoDB TTL auto-deletes after 5 minutes if uncollected |
+| Expired token cleanup | Separate `pending#` items have their own 5-minute DynamoDB TTL — no plaintext lingers |
 | Revocation | Delete DynamoDB record → user must re-auth |
 | No duplicate issuance | PostAuth Lambda skips if VerifyAuthChallenge recently rotated; `ConditionExpression` as fallback |
 | Least-privilege IAM | Each Lambda scoped to only the DynamoDB actions it uses |
@@ -191,6 +194,7 @@ If a user's session exceeds `MAX_ABSOLUTE_SESSION_DAYS` (even if active daily):
 | Cognito refresh token TTL | 30 days | Short enough to satisfy compliance; configurable |
 | Cognito access/ID token TTL | 60 minutes | Standard |
 | `maxInactivityDays` in DynamoDB | 30 days | Rolling — resets on each renewal |
+| `INACTIVITY_POLICY_MODE` | `enforced` | `enforced` = policy tightening applies immediately (uses min of env var and DB); `permissive` = existing sessions keep their original window |
 | `MAX_ABSOLUTE_SESSION_DAYS` | 90 days | Hard cap — even active users must re-auth after this |
 | Renewal token length | 256 bits (32 bytes hex) | Cryptographically strong |
 | Buffer before expiry to trigger renewal | 24 hours | Avoids race conditions |
