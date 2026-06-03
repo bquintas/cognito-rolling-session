@@ -50,17 +50,17 @@ REPORT Duration: 416.71 ms  Billed: 417 ms  Memory: 93 MB
 ```
 INIT_START Runtime Version: nodejs:20.v101
 START RequestId: 986d37b6-1929-4dc2-8842-339755339732
-12:39:27.181Z  INFO  FetchRenewalToken invoked {"requestId":"20068d53-...","claims":"323524e4-...","sourceIp":"176.142.192.21","userAgent":"curl/8.7.1"}
+12:39:27.181Z  INFO  FetchRenewalToken invoked {"requestId":"20068d53-...","claims":"323524e4-...","sourceIp":"xxx.xxx.xxx.xxx","userAgent":"curl/8.7.1"}
 12:39:28.183Z  INFO  Renewal token delivered to user 323524e4-... (one-time pickup)
 REPORT Duration: 1023.81 ms  Billed: 1611 ms  Memory: 94 MB  Init: 586.93 ms
 
 START RequestId: deeca1a6-f87f-4616-b947-86e01892b939
-12:39:28.489Z  INFO  FetchRenewalToken invoked {"requestId":"e180d60c-...","claims":"323524e4-...","sourceIp":"176.142.192.21","userAgent":"curl/8.7.1"}
+12:39:28.489Z  INFO  FetchRenewalToken invoked {"requestId":"e180d60c-...","claims":"323524e4-...","sourceIp":"xxx.xxx.xxx.xxx","userAgent":"curl/8.7.1"}
 12:39:28.523Z  INFO  No pending renewal token for user 323524e4-...
 REPORT Duration: 55.26 ms  Billed: 56 ms  Memory: 94 MB
 
 START RequestId: 428f77b2-039e-43e4-8280-0a0f8b7ec7a2
-12:39:38.863Z  INFO  FetchRenewalToken invoked {"requestId":"b1f76646-...","claims":"323524e4-...","sourceIp":"176.142.192.21","userAgent":"curl/8.7.1"}
+12:39:38.863Z  INFO  FetchRenewalToken invoked {"requestId":"b1f76646-...","claims":"323524e4-...","sourceIp":"xxx.xxx.xxx.xxx","userAgent":"curl/8.7.1"}
 12:39:39.183Z  INFO  Renewal token delivered to user 323524e4-... (one-time pickup)
 REPORT Duration: 448.89 ms  Billed: 449 ms  Memory: 95 MB
 ```
@@ -100,16 +100,17 @@ REPORT Duration: 213.87 ms  Billed: 214 ms  Memory: 95 MB
 
 ```
 INIT_START Runtime Version: nodejs:20.v101
-RequestId: 9f15f814  Duration: 3.50 ms  Init: 223.71 ms  (cold start)
-RequestId: f9f2b893  Duration: 1.75 ms  (challenge issued → pass to VerifyAuth)
-RequestId: ec322a70  Duration: 2.17 ms  (VerifyAuth succeeded → issueTokens: true)
-RequestId: 068dcb89  Duration: 1.67 ms  (old token flow)
-RequestId: 54295233  Duration: 8.76 ms  (revocation flow)
-RequestId: fcac0fb9  Duration: 1.53 ms  (revocation VerifyAuth failed → failAuthentication)
+RequestId: 9f15f814  Duration: 3.50 ms  Init: 223.71 ms  (cold start — renewal flow, issues CUSTOM_CHALLENGE)
+RequestId: f9f2b893  Duration: 1.75 ms  (renewal flow — VerifyAuth succeeded → issueTokens: true)
+RequestId: ec322a70  Duration: 2.17 ms  (old token test — issues CUSTOM_CHALLENGE)
+RequestId: 068dcb89  Duration: 1.67 ms  (old token test — VerifyAuth failed → failAuthentication)
+RequestId: 54295233  Duration: 8.76 ms  (revocation test — issues CUSTOM_CHALLENGE)
+RequestId: fcac0fb9  Duration: 1.53 ms  (revocation test — VerifyAuth failed → failAuthentication)
 ```
 
 **Key observations:**
-- 6 invocations total: 2 per CUSTOM_AUTH attempt (define → verify → define again to check result)
+- 2 invocations per CUSTOM_AUTH attempt (before VerifyAuth + after to check result)
+- 3 CUSTOM_AUTH attempts in the demo: successful renewal, old token rejection, post-revocation rejection
 - Sub-2ms warm execution — zero business logic, just session array inspection
 
 ---
@@ -125,4 +126,4 @@ RequestId: fcac0fb9  Duration: 1.53 ms  (revocation VerifyAuth failed → failAu
 | timingSafeEqual | Successful validation at 12:39:36 (no timing errors) |
 | Separate pending item (5-min TTL) | Token delivered from `pending#` item, auto-expires |
 | **Session revocation** | "No renewal token found" at 12:39:56 after DynamoDB delete |
-| sourceIp audit logging | `176.142.192.21` logged on all API calls |
+| sourceIp audit logging | Client IP logged (anonymized in this doc) on all API calls |
