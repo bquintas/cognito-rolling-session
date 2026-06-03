@@ -102,12 +102,31 @@ Resources:
       FunctionName: !Sub "cognito-post-authentication-${Environment}"
       CodeUri: ../lambdas/
       Handler: postAuthentication.handler
+      Environment:
+        Variables:
+          TABLE_NAME: !Ref RenewalTokensTable
+          MAX_INACTIVITY_DAYS: !Ref MaxInactivityDays
+          MAX_ABSOLUTE_SESSION_DAYS: !Ref MaxAbsoluteSessionDays
       Policies:
         - Statement:
             - Effect: Allow
               Action:
                 - dynamodb:GetItem
                 - dynamodb:PutItem
+                - dynamodb:DeleteItem
+              Resource: !GetAtt RenewalTokensTable.Arn
+
+  PostConfirmationFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: !Sub "cognito-post-confirmation-${Environment}"
+      CodeUri: ../lambdas/
+      Handler: postConfirmation.handler
+      Policies:
+        - Statement:
+            - Effect: Allow
+              Action:
+                - dynamodb:DeleteItem
               Resource: !GetAtt RenewalTokensTable.Arn
 
   FetchRenewalTokenFunction:
@@ -177,6 +196,7 @@ Resources:
         CreateAuthChallenge: !GetAtt CreateAuthChallengeFunction.Arn
         VerifyAuthChallengeResponse: !GetAtt VerifyAuthChallengeFunction.Arn
         PostAuthentication: !GetAtt PostAuthenticationFunction.Arn
+        PostConfirmation: !GetAtt PostConfirmationFunction.Arn
 
   UserPoolClient:
     Type: AWS::Cognito::UserPoolClient
@@ -229,6 +249,14 @@ Resources:
     Type: AWS::Lambda::Permission
     Properties:
       FunctionName: !GetAtt PostAuthenticationFunction.Arn
+      Action: lambda:InvokeFunction
+      Principal: cognito-idp.amazonaws.com
+      SourceArn: !GetAtt UserPool.Arn
+
+  PostConfirmationPermission:
+    Type: AWS::Lambda::Permission
+    Properties:
+      FunctionName: !GetAtt PostConfirmationFunction.Arn
       Action: lambda:InvokeFunction
       Principal: cognito-idp.amazonaws.com
       SourceArn: !GetAtt UserPool.Arn

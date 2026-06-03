@@ -11,12 +11,13 @@
  *   TABLE_NAME - DynamoDB table name (default: "CognitoRenewalTokens")
  *   MAX_INACTIVITY_DAYS - Default inactivity window (default: 30)
  */
-import { DynamoDBClient, PutItemCommand, GetItemCommand } from "@aws-sdk/client-dynamodb";
+import { DynamoDBClient, PutItemCommand, GetItemCommand, DeleteItemCommand } from "@aws-sdk/client-dynamodb";
 import { createHash, randomBytes } from "crypto";
 
 const ddb = new DynamoDBClient({});
 const TABLE_NAME = process.env.TABLE_NAME || "CognitoRenewalTokens";
 const MAX_INACTIVITY_DAYS = parseInt(process.env.MAX_INACTIVITY_DAYS || "30", 10);
+const MAX_ABSOLUTE_SESSION_DAYS = parseInt(process.env.MAX_ABSOLUTE_SESSION_DAYS || "90", 10);
 
 export const handler = async (event) => {
   // Only issue renewal tokens for direct user authentication (not token refresh)
@@ -59,6 +60,21 @@ export const handler = async (event) => {
     ? parseInt(existingRecord.Item.issuedAt.N, 10)
     : now;
 
+  // If the existing session has exceeded the absolute limit, delete it instead of re-issuing.
+  // This prevents issuing tokens for sessions that should have been terminated.
+  let sessionIssuedAt = existingIssuedAt;
+  if (existingRecord.Item?.issuedAt?.N) {
+    const absoluteLimitMs = MAX_ABSOLUTE_SESSION_DAYS * 24 * 60 * 60 * 1000;
+    if ((now - existingIssuedAt) > absoluteLimitMs) {
+      await ddb.send(new DeleteItemCommand({
+        TableName: TABLE_NAME,
+        Key: { userSub: { S: userSub } }
+      }));
+      console.log(`Expired session cleaned up for user ${userSub} (absolute limit exceeded, starting fresh)`);
+      sessionIssuedAt = now; // Fresh login — reset the clock
+    }
+  }
+
   // Store hash in DynamoDB with ConditionExpression to avoid clobbering a
   // VerifyAuthChallenge rotation that happened between our GetItem and now.
   try {
@@ -67,7 +83,7 @@ export const handler = async (event) => {
       Item: {
         userSub: { S: userSub },
         tokenHash: { S: tokenHash },
-        issuedAt: { N: String(existingIssuedAt) },  // Preserve original issuedAt
+        issuedAt: { N: String(sessionIssuedAt) },  // Preserved or reset if absolute limit exceeded
         lastUsedAt: { N: String(now) },
         maxInactivityDays: { N: String(MAX_INACTIVITY_DAYS) },
         ttl: { N: String(ttlSeconds) }
