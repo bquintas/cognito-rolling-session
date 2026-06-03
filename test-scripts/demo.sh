@@ -39,6 +39,7 @@ REGION="${AWS_REGION:-eu-west-1}"
 USER_POOL_ID="${USER_POOL_ID:?'Set USER_POOL_ID from stack output'}"
 CLIENT_ID="${CLIENT_ID:?'Set CLIENT_ID from stack output'}"
 API_ENDPOINT="${API_ENDPOINT:?'Set API_ENDPOINT from stack output'}"
+TABLE_NAME="${TABLE_NAME:?'Set TABLE_NAME from stack output'}"
 TEST_EMAIL="testuser-poc@example.com"
 TEST_PASSWORD="${TEST_PASSWORD:-$(openssl rand -base64 16)}"
 
@@ -257,7 +258,73 @@ else
 fi
 
 # =============================================================================
-step "8. Summary"
+step "8. Session revocation (admin kills the session)"
+# =============================================================================
+
+log "Simulating admin revocation: deleting DynamoDB session record..."
+
+# Get user sub from the ID token
+USER_SUB=$(echo "$NEW_ID_TOKEN" | cut -d'.' -f2 | base64 -d 2>/dev/null | jq -r '.sub' 2>/dev/null) || true
+
+if [ -z "$USER_SUB" ] || [ "$USER_SUB" = "null" ]; then
+  # Fallback: look up user sub from Cognito
+  USER_SUB=$(aws cognito-idp admin-get-user \
+    --user-pool-id "$USER_POOL_ID" \
+    --username "$TEST_EMAIL" \
+    --region "$REGION" \
+    --query 'UserAttributes[?Name==`sub`].Value' \
+    --output text)
+fi
+
+log "User sub: $USER_SUB"
+
+# Delete the session record (this is the revocation)
+aws dynamodb delete-item \
+  --table-name "$TABLE_NAME" \
+  --key "{\"userSub\": {\"S\": \"$USER_SUB\"}}" \
+  --region "$REGION"
+
+success "Session record deleted from DynamoDB (revoked!)"
+
+# Also clean up any pending token
+aws dynamodb delete-item \
+  --table-name "$TABLE_NAME" \
+  --key "{\"userSub\": {\"S\": \"pending#$USER_SUB\"}}" \
+  --region "$REGION" 2>/dev/null || true
+
+log ""
+log "Now attempting renewal with the VALID rotated token (should fail after revocation)..."
+
+INITIATE_RESULT_3=$(aws cognito-idp initiate-auth \
+  --auth-flow CUSTOM_AUTH \
+  --client-id "$CLIENT_ID" \
+  --auth-parameters USERNAME="$TEST_EMAIL" \
+  --region "$REGION")
+
+SESSION_3=$(echo "$INITIATE_RESULT_3" | jq -r '.Session')
+
+RESPOND_RESULT_3=$(aws cognito-idp respond-to-auth-challenge \
+  --client-id "$CLIENT_ID" \
+  --challenge-name CUSTOM_CHALLENGE \
+  --session "$SESSION_3" \
+  --challenge-responses USERNAME="$TEST_EMAIL",ANSWER="$NEW_RENEWAL_TOKEN" \
+  --region "$REGION" 2>&1) || true
+
+if echo "$RESPOND_RESULT_3" | grep -q "NotAuthorizedException\|failAuthentication"; then
+  success "Renewal correctly rejected after revocation!"
+  log "Even a valid token is useless once the session is revoked."
+else
+  FAIL_CHECK_3=$(echo "$RESPOND_RESULT_3" | jq -r '.AuthenticationResult.AccessToken' 2>/dev/null)
+  if [ "$FAIL_CHECK_3" = "null" ] || [ -z "$FAIL_CHECK_3" ]; then
+    success "Renewal rejected after revocation (session record gone)"
+  else
+    fail "Token was accepted after revocation — something is wrong"
+    echo "$RESPOND_RESULT_3" | jq . 2>/dev/null || echo "$RESPOND_RESULT_3"
+  fi
+fi
+
+# =============================================================================
+step "9. Summary"
 # =============================================================================
 
 echo -e "${GREEN}"
@@ -271,9 +338,11 @@ echo "║  ✓ Silent re-authentication via CUSTOM_AUTH + renewal token  ║"
 echo "║  ✓ Fresh tokens issued (full TTL reset)                      ║"
 echo "║  ✓ Renewal token rotated on each use                         ║"
 echo "║  ✓ Old renewal token invalidated after rotation              ║"
+echo "║  ✓ Session revocation: valid token rejected after DB delete  ║"
 echo "║                                                              ║"
 echo "║  → User was NEVER shown a login screen during renewal        ║"
 echo "║  → Inactive users (> N days) would be rejected               ║"
+echo "║  → Admins can instantly revoke any session via DynamoDB      ║"
 echo "║                                                              ║"
 echo "╚══════════════════════════════════════════════════════════════╝"
 echo -e "${NC}"
