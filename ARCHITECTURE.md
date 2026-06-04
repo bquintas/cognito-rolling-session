@@ -96,6 +96,19 @@ aws cognito-idp admin-user-global-sign-out \
 - Renewal token delivery via API Gateway (`GET /renewal-token`, Cognito Authorizer)
 - DynamoDB TTL deletion can lag up to 48h — app-level TTL check enforces the 5-min window
 
+## Known Cognito Limitations
+
+These are platform constraints with no Lambda trigger available:
+
+| Scenario | Impact | Mitigation |
+|----------|--------|------------|
+| `ChangePassword` API (user self-service) | No trigger fires → renewal token survives | Manual revocation (DynamoDB delete) or EventBridge rule on CloudTrail `ChangePassword` events |
+| `AdminSetUserPassword` / `AdminResetUserPassword` | No trigger fires → renewal token survives | Admin should delete DynamoDB record alongside password reset |
+| `GlobalSignOut` / `AdminUserGlobalSignOut` | Revokes Cognito tokens only, not DynamoDB renewal token | User/admin must also call revocation procedure (DynamoDB delete) |
+| `ConfirmForgotPassword` | ✅ Handled — `PostConfirmation` Lambda deletes session | — |
+
+For production: implement a custom `DELETE /renewal-token` API endpoint so users can self-service revoke, or use EventBridge + CloudTrail to automate revocation on password change events.
+
 ## Cost
 
 < $1/month for 10K users (6 Lambdas at 128MB + DynamoDB on-demand + API Gateway). Scales linearly.

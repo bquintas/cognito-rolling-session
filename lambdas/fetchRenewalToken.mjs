@@ -76,11 +76,16 @@ export const handler = async (event) => {
 
     const renewalToken = result.Item.pendingToken.S;
 
-    // Delete the pending item (one-time pickup)
+    // Delete the pending item (one-time pickup).
+    // Compare the actual token value — not just existence — to avoid deleting
+    // a newer pending token that was written between our GetItem and this DeleteItem.
     await ddb.send(new DeleteItemCommand({
       TableName: TABLE_NAME,
       Key: { userSub: { S: `pending#${userSub}` } },
-      ConditionExpression: "attribute_exists(pendingToken)"
+      ConditionExpression: "pendingToken = :expectedToken",
+      ExpressionAttributeValues: {
+        ":expectedToken": { S: renewalToken }
+      }
     }));
 
     console.log(`Renewal token delivered to user ${userSub} (one-time pickup)`);
